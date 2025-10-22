@@ -15,6 +15,7 @@ import 'models/user_data.dart';
 import 'models/auth_user.dart';
 import 'services/recommendation_service.dart';
 import 'database/database_helper.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 // Helper function to find similar games based on tags overlap
 List<GameItem> findSimilarGames(GameItem targetGame, int count) {
@@ -62,6 +63,12 @@ List<GameItem> findSimilarGames(GameItem targetGame, int count) {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize database factory for Windows
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
   
   // Initialize database and run migration
   await DatabaseHelper.database; // This initializes the database
