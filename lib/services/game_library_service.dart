@@ -263,51 +263,46 @@ class GameLibraryService {
 
   // Get user achievements
   static Future<List<UserAchievement>> getUserAchievements() async {
+    final prefs = await SharedPreferences.getInstance();
     final currentUser = await _getCurrentUserId();
     if (currentUser == null) return [];
     
-    final db = await DatabaseHelper.database;
-    final result = await db.query(
-      DatabaseHelper.userAchievementsTable,
-      where: 'user_id = ?',
-      whereArgs: [currentUser],
-    );
-    
-    return result.map((row) => UserAchievement(
-      achievementId: row['achievement_id'] as String,
-      unlockedAt: DateTime.fromMillisecondsSinceEpoch(row['unlocked_at'] as int),
-      progress: row['progress'] as int,
-      isUnlocked: (row['is_unlocked'] as int) == 1,
-    )).toList();
+    final achievementsJson = prefs.getString('$_achievementsKey$currentUser');
+    if (achievementsJson != null) {
+      final List<dynamic> achievementsList = jsonDecode(achievementsJson);
+      return achievementsList.map((json) => UserAchievement.fromJson(json)).toList();
+    }
+    return [];
   }
 
   // Unlock achievement
   static Future<void> unlockAchievement(String achievementId) async {
-    final currentUser = await _getCurrentUserId();
-    if (currentUser == null) return;
+    final achievements = await getUserAchievements();
+    final existingIndex = achievements.indexWhere((a) => a.achievementId == achievementId);
     
-    final db = await DatabaseHelper.database;
-    
-    // Check if achievement is already unlocked
-    final existing = await db.query(
-      DatabaseHelper.userAchievementsTable,
-      where: 'user_id = ? AND achievement_id = ?',
-      whereArgs: [currentUser, achievementId],
-    );
-    
-    if (existing.isEmpty) {
-      // Insert new achievement
-      await db.insert(
-        DatabaseHelper.userAchievementsTable,
-        {
-          'user_id': currentUser,
-          'achievement_id': achievementId,
-          'unlocked_at': DateTime.now().millisecondsSinceEpoch,
-          'progress': 100,
-          'is_unlocked': 1,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+    if (existingIndex == -1) {
+      achievements.add(UserAchievement(
+        achievementId: achievementId,
+        unlockedAt: DateTime.now(),
+        progress: 100,
+        isUnlocked: true,
+      ));
+      // Save achievements to database
+      final currentUser = await _getCurrentUserId();
+      if (currentUser != null) {
+        final db = await DatabaseHelper.database;
+        await db.insert(
+          DatabaseHelper.userAchievementsTable,
+          {
+            'user_id': currentUser,
+            'achievement_id': achievementId,
+            'unlocked_at': DateTime.now().millisecondsSinceEpoch,
+            'progress': 100,
+            'is_unlocked': 1,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
     }
   }
 
@@ -347,22 +342,11 @@ class GameLibraryService {
     
     // Save friends to database
     final db = await DatabaseHelper.database;
-    
-    // Ensure user1_id < user2_id constraint is met
-    String user1Id, user2Id;
-    if (currentUser.compareTo(friend.id) < 0) {
-      user1Id = currentUser;
-      user2Id = friend.id;
-    } else {
-      user1Id = friend.id;
-      user2Id = currentUser;
-    }
-    
     await db.insert(
       DatabaseHelper.friendshipsTable,
       {
-        'user1_id': user1Id,
-        'user2_id': user2Id,
+        'user1_id': currentUser,
+        'user2_id': friend.id,
         'created_at': DateTime.now().millisecondsSinceEpoch,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
@@ -512,22 +496,11 @@ class GameLibraryService {
     
     // Save both friends lists to database
     final db = await DatabaseHelper.database;
-    
-    // Ensure user1_id < user2_id constraint is met
-    String user1Id, user2Id;
-    if (request.fromUserId.compareTo(currentUser) < 0) {
-      user1Id = request.fromUserId;
-      user2Id = currentUser;
-    } else {
-      user1Id = currentUser;
-      user2Id = request.fromUserId;
-    }
-    
     await db.insert(
       DatabaseHelper.friendshipsTable,
       {
-        'user1_id': user1Id,
-        'user2_id': user2Id,
+        'user1_id': request.fromUserId,
+        'user2_id': currentUser,
         'created_at': DateTime.now().millisecondsSinceEpoch,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
