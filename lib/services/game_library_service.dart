@@ -506,6 +506,14 @@ class GameLibraryService {
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
     
+    // Save current user's friends list to SharedPreferences
+    final friendsJson = jsonEncode(friends.map((f) => f.toJson()).toList());
+    await prefs.setString('$_friendsKey$currentUser', friendsJson);
+    
+    // Save requester's friends list to SharedPreferences
+    final requesterFriendsJson = jsonEncode(requesterFriends.map((f) => f.toJson()).toList());
+    await prefs.setString('$_friendsKey${request.fromUserId}', requesterFriendsJson);
+    
     // Save updated requests globally
     final requestsJsonNew = jsonEncode(requests.map((r) => r.toJson()).toList());
     await prefs.setString('global_friend_requests', requestsJsonNew);
