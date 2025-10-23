@@ -496,11 +496,16 @@ class GameLibraryService {
     
     // Save both friends lists to database
     final db = await DatabaseHelper.database;
+    
+    // Ensure user1_id < user2_id for the CHECK constraint
+    final user1Id = request.fromUserId.compareTo(currentUser) < 0 ? request.fromUserId : currentUser;
+    final user2Id = request.fromUserId.compareTo(currentUser) < 0 ? currentUser : request.fromUserId;
+    
     await db.insert(
       DatabaseHelper.friendshipsTable,
       {
-        'user1_id': request.fromUserId,
-        'user2_id': currentUser,
+        'user1_id': user1Id,
+        'user2_id': user2Id,
         'created_at': DateTime.now().millisecondsSinceEpoch,
       },
       conflictAlgorithm: ConflictAlgorithm.replace,
@@ -511,8 +516,8 @@ class GameLibraryService {
     await prefs.setString('$_friendsKey$currentUser', friendsJson);
     
     // Save requester's friends list to SharedPreferences
-    final requesterFriendsJson = jsonEncode(requesterFriends.map((f) => f.toJson()).toList());
-    await prefs.setString('$_friendsKey${request.fromUserId}', requesterFriendsJson);
+    final requesterFriendsJsonNew = jsonEncode(requesterFriends.map((f) => f.toJson()).toList());
+    await prefs.setString('$_friendsKey${request.fromUserId}', requesterFriendsJsonNew);
     
     // Save updated requests globally
     final requestsJsonNew = jsonEncode(requests.map((r) => r.toJson()).toList());
