@@ -12,6 +12,7 @@ class AchievementsScreen extends StatefulWidget {
 class _AchievementsScreenState extends State<AchievementsScreen> {
   List<UserAchievement> _userAchievements = [];
   List<Achievement> _allAchievements = [];
+  UserProfile? _userProfile;
   bool _isLoading = true;
 
   @override
@@ -20,11 +21,21 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
     _loadAchievements();
   }
 
+  @override
+  void dispose() {
+    // Clear any existing snackbars to prevent looping
+    ScaffoldMessenger.of(context).clearSnackBars();
+    super.dispose();
+  }
+
   Future<void> _loadAchievements() async {
     setState(() => _isLoading = true);
     
-    // Load user achievements
+    // Load user achievements first
     final userAchievements = await GameLibraryService.getUserAchievements();
+    
+    // Load user profile for XP/level info
+    final userProfile = await GameLibraryService.getUserProfile();
     
     // Load all available achievements
     final allAchievements = _getAllAchievements();
@@ -32,68 +43,164 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
     setState(() {
       _userAchievements = userAchievements;
       _allAchievements = allAchievements;
+      _userProfile = userProfile;
       _isLoading = false;
     });
   }
 
+  Future<void> _forceCheckAchievements() async {
+    setState(() => _isLoading = true);
+    
+    // Force check achievements
+    final unlockedAchievements = await GameLibraryService.checkAndUnlockAchievements();
+    
+    // Show notification if any achievements were unlocked
+    if (unlockedAchievements.isNotEmpty && mounted) {
+      // Clear any existing snackbars first
+      ScaffoldMessenger.of(context).clearSnackBars();
+      
+      // Show only one notification for all unlocked achievements
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${unlockedAchievements.length} achievement(s) unlocked!'),
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    } else if (mounted) {
+      // Clear any existing snackbars first
+      ScaffoldMessenger.of(context).clearSnackBars();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No new achievements unlocked'),
+          backgroundColor: Colors.blue,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
+    
+    // Reload achievements to update UI
+    await _loadAchievements();
+  }
+
   List<Achievement> _getAllAchievements() {
-    return [
-      Achievement(
-        id: 'first_game',
-        title: 'First Steps',
-        description: 'Purchase your first game',
-        iconUrl: '🎮',
-        xpReward: 50,
-        type: AchievementType.milestone,
-        requirements: {'games_purchased': 1},
-      ),
-      Achievement(
-        id: 'game_collector',
-        title: 'Game Collector',
-        description: 'Own 10 games in your library',
-        iconUrl: '📚',
-        xpReward: 100,
-        type: AchievementType.collection,
-        requirements: {'games_owned': 10},
-      ),
-      Achievement(
-        id: 'social_butterfly',
-        title: 'Social Butterfly',
-        description: 'Add 5 friends',
-        iconUrl: '👥',
-        xpReward: 75,
-        type: AchievementType.social,
-        requirements: {'friends_count': 5},
-      ),
-      Achievement(
-        id: 'reviewer',
-        title: 'Critic',
-        description: 'Write your first game review',
-        iconUrl: '✍️',
-        xpReward: 25,
-        type: AchievementType.gaming,
-        requirements: {'reviews_written': 1},
-      ),
-      Achievement(
-        id: 'time_master',
-        title: 'Time Master',
-        description: 'Play games for 100 hours total',
-        iconUrl: '⏰',
-        xpReward: 200,
-        type: AchievementType.gaming,
-        requirements: {'total_playtime': 100},
-      ),
-      Achievement(
-        id: 'early_bird',
-        title: 'Early Bird',
-        description: 'Purchase a game on release day',
-        iconUrl: '🐦',
-        xpReward: 150,
-        type: AchievementType.special,
-        requirements: {'day_one_purchase': 1},
-        isSecret: true,
-      ),
-    ];
+    return GameLibraryService.getAllAchievements();
+  }
+
+  Future<void> _showDebugInfo() async {
+    final debugStats = await GameLibraryService.getDebugStats();
+    
+    if (mounted) {
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Debug Info'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('User ID: ${debugStats['user_id'] ?? 'None'}'),
+                Text('Level: ${debugStats['user_level'] ?? 0}'),
+                Text('XP: ${debugStats['user_xp'] ?? 0}'),
+                Text('Games in Library: ${debugStats['games_in_library'] ?? 0}'),
+                Text('Friends: ${debugStats['friends_count'] ?? 0}'),
+                Text('Reviews Written: ${debugStats['reviews_written'] ?? 0}'),
+                Text('Total Playtime: ${debugStats['total_playtime'] ?? 0.0} hours'),
+                const SizedBox(height: 16),
+                const Text('Achievement Requirements:', style: TextStyle(fontWeight: FontWeight.bold)),
+                const Text('• First Steps: 1+ games'),
+                const Text('• Game Collector: 10+ games'),
+                const Text('• Library Master: 25+ games'),
+                const Text('• Social Butterfly: 5+ friends'),
+                const Text('• Social Networker: 10+ friends'),
+                const Text('• Critic: 1+ reviews'),
+                const Text('• Review Master: 10+ reviews'),
+                const Text('• Time Master: 100+ hours'),
+                const Text('• Dedicated Gamer: 500+ hours'),
+                const Text('• Early Bird: 3+ games'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  Future<void> _forceUnlockLibrary() async {
+    setState(() => _isLoading = true);
+    
+    // Force unlock library achievements
+    await GameLibraryService.forceUnlockLibraryAchievements();
+    
+    if (mounted) {
+      // Clear any existing snackbars first
+      ScaffoldMessenger.of(context).clearSnackBars();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Library achievements unlocked!'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+    
+    // Reload achievements to update UI
+    await _loadAchievements();
+  }
+
+  Future<void> _forceUnlockAll() async {
+    setState(() => _isLoading = true);
+    
+    // Force unlock all achievements
+    await GameLibraryService.forceUnlockAllAchievements();
+    
+    if (mounted) {
+      // Clear any existing snackbars first
+      ScaffoldMessenger.of(context).clearSnackBars();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('All achievements unlocked!'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+    
+    // Reload achievements to update UI
+    await _loadAchievements();
+  }
+
+  Future<void> _testGameCollector() async {
+    setState(() => _isLoading = true);
+    
+    // Force unlock game_collector specifically
+    await GameLibraryService.forceUnlockGameCollector();
+    
+    if (mounted) {
+      // Clear any existing snackbars first
+      ScaffoldMessenger.of(context).clearSnackBars();
+      
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Game Collector achievement force unlocked!'),
+          backgroundColor: Colors.green,
+          duration: Duration(seconds: 3),
+        ),
+      );
+    }
+    
+    // Reload achievements to update UI
+    await _loadAchievements();
   }
 
   @override
@@ -103,8 +210,29 @@ class _AchievementsScreenState extends State<AchievementsScreen> {
         title: const Text('Achievements'),
         actions: [
           IconButton(
-            onPressed: _loadAchievements,
+            onPressed: _showDebugInfo,
+            icon: const Icon(Icons.info_outline),
+            tooltip: 'Show debug info',
+          ),
+          IconButton(
+            onPressed: _testGameCollector,
+            icon: const Icon(Icons.sports_esports),
+            tooltip: 'Test Game Collector unlock',
+          ),
+          IconButton(
+            onPressed: _forceUnlockLibrary,
+            icon: const Icon(Icons.library_books),
+            tooltip: 'Force unlock library achievements',
+          ),
+          IconButton(
+            onPressed: _forceUnlockAll,
+            icon: const Icon(Icons.star),
+            tooltip: 'Force unlock all achievements',
+          ),
+          IconButton(
+            onPressed: _forceCheckAchievements,
             icon: const Icon(Icons.refresh),
+            tooltip: 'Check for new achievements',
           ),
         ],
       ),

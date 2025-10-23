@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import '../models/user_data.dart';
@@ -172,6 +173,9 @@ class GameLibraryService {
     );
     
     print('DEBUG: Game added to library successfully');
+    
+    // Check and unlock achievements after adding game
+    await checkAndUnlockAchievements();
   }
 
   // Remove game from library
@@ -259,6 +263,9 @@ class GameLibraryService {
     
     reviewsList.add(review.toJson());
     await prefs.setString('global_game_reviews', jsonEncode(reviewsList));
+    
+    // Check and unlock achievements after adding review
+    await checkAndUnlockAchievements();
   }
 
   // Get user achievements
@@ -275,18 +282,132 @@ class GameLibraryService {
     return [];
   }
 
-  // Unlock achievement
-  static Future<void> unlockAchievement(String achievementId) async {
+  // Check and unlock achievements based on user progress
+  static Future<List<String>> checkAndUnlockAchievements() async {
+    final currentUser = await _getCurrentUserId();
+    if (currentUser == null) return [];
+    
+    final unlockedAchievements = <String>[];
+    final userProfile = await getUserProfile();
+    final friends = await getFriends();
+    final library = await getUserLibrary();
+    
+    // Debug logging
+    print('DEBUG: Checking achievements for user: $currentUser');
+    print('DEBUG: Library count: ${library.length}');
+    print('DEBUG: Friends count: ${friends.length}');
+    
+    // Get all available achievements
+    final allAchievements = getAllAchievements();
+    final userAchievements = await getUserAchievements();
+    
+    print('DEBUG: User achievements count: ${userAchievements.length}');
+    for (final ua in userAchievements) {
+      print('DEBUG: Achievement ${ua.achievementId}: unlocked=${ua.isUnlocked}');
+    }
+    
+    for (final achievement in allAchievements) {
+      // Skip if already unlocked
+      if (userAchievements.any((ua) => ua.achievementId == achievement.id && ua.isUnlocked)) {
+        continue;
+      }
+      
+      bool shouldUnlock = false;
+      int progress = 0;
+      
+      // Check achievement requirements
+      print('DEBUG: Checking achievement: ${achievement.id}');
+      switch (achievement.id) {
+        case 'first_game':
+          progress = library.length;
+          shouldUnlock = library.length >= 1;
+          print('DEBUG: first_game - progress: $progress, shouldUnlock: $shouldUnlock');
+          break;
+        case 'game_collector':
+          progress = library.length;
+          shouldUnlock = library.length >= 10;
+          print('DEBUG: game_collector - progress: $progress, shouldUnlock: $shouldUnlock');
+          break;
+        case 'social_butterfly':
+          progress = friends.length;
+          shouldUnlock = friends.length >= 5;
+          break;
+        case 'reviewer':
+          // Check if user has written any reviews
+          final reviews = await getGameReviews(currentUser);
+          progress = reviews.length;
+          shouldUnlock = reviews.length >= 1;
+          break;
+        case 'time_master':
+          // Calculate total playtime from user profile
+          final totalPlaytime = userProfile?.gamePlaytime.values.fold(0.0, (sum, time) => sum + time) ?? 0.0;
+          progress = totalPlaytime.toInt();
+          shouldUnlock = totalPlaytime >= 100;
+          break;
+        case 'early_bird':
+          // This would need special logic to detect day-one purchases
+          // For now, we'll make it unlockable after owning 3 games
+          progress = library.length;
+          shouldUnlock = library.length >= 3;
+          break;
+        case 'library_master':
+          progress = library.length;
+          shouldUnlock = library.length >= 25;
+          break;
+        case 'social_networker':
+          progress = friends.length;
+          shouldUnlock = friends.length >= 10;
+          break;
+        case 'dedicated_gamer':
+          // Calculate total playtime from user profile
+          final totalPlaytimeDedicated = userProfile?.gamePlaytime.values.fold(0.0, (sum, time) => sum + time) ?? 0.0;
+          progress = totalPlaytimeDedicated.toInt();
+          shouldUnlock = totalPlaytimeDedicated >= 500;
+          break;
+        case 'review_master':
+          // Check if user has written 10+ reviews
+          final reviewsMaster = await getGameReviews(currentUser);
+          progress = reviewsMaster.length;
+          shouldUnlock = reviewsMaster.length >= 10;
+          break;
+        }
+      
+      if (shouldUnlock) {
+        print('DEBUG: Unlocking achievement: ${achievement.id}');
+        await unlockAchievement(achievement.id, achievement.xpReward);
+        unlockedAchievements.add(achievement.title);
+        print('DEBUG: Achievement unlocked: ${achievement.title}');
+      } else {
+        print('DEBUG: Updating progress for: ${achievement.id} - progress: $progress');
+        // Update progress for locked achievements
+        await updateAchievementProgress(achievement.id, progress);
+      }
+    }
+    
+    return unlockedAchievements;
+  }
+
+  // Unlock achievement and award XP
+  static Future<void> unlockAchievement(String achievementId, int xpReward) async {
+    print('DEBUG: unlockAchievement called for: $achievementId');
     final achievements = await getUserAchievements();
     final existingIndex = achievements.indexWhere((a) => a.achievementId == achievementId);
     
+    print('DEBUG: Existing achievements count: ${achievements.length}');
+    print('DEBUG: Existing index for $achievementId: $existingIndex');
+    
     if (existingIndex == -1) {
+      print('DEBUG: Adding new achievement: $achievementId');
       achievements.add(UserAchievement(
         achievementId: achievementId,
         unlockedAt: DateTime.now(),
         progress: 100,
         isUnlocked: true,
       ));
+      
+      // Award XP and level up
+      await awardXP(xpReward);
+      
       // Save achievements to database
       final currentUser = await _getCurrentUserId();
       if (currentUser != null) {
@@ -303,7 +424,255 @@ class GameLibraryService {
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
       }
+      
+      // Save to SharedPreferences
+      final prefs = await SharedPreferences.getInstance();
+      final achievementsJson = jsonEncode(achievements.map((a) => a.toJson()).toList());
+      await prefs.setString('$_achievementsKey$currentUser', achievementsJson);
+      print('DEBUG: Saved achievements to SharedPreferences: ${achievements.length} achievements');
+    } else {
+      print('DEBUG: Achievement $achievementId already exists, updating...');
+      if (existingIndex != -1) {
+        achievements[existingIndex] = UserAchievement(
+          achievementId: achievementId,
+          unlockedAt: DateTime.now(),
+          progress: 100,
+          isUnlocked: true,
+        );
+        
+        // Save to SharedPreferences
+        final currentUser = await _getCurrentUserId();
+        if (currentUser != null) {
+          final prefs = await SharedPreferences.getInstance();
+          final achievementsJson = jsonEncode(achievements.map((a) => a.toJson()).toList());
+          await prefs.setString('$_achievementsKey$currentUser', achievementsJson);
+          print('DEBUG: Updated existing achievement: $achievementId');
+        }
+      }
     }
+  }
+
+  // Award XP and handle leveling up
+  static Future<void> awardXP(int xpAmount) async {
+    final currentUser = await _getCurrentUserId();
+    if (currentUser == null) return;
+    
+    final userProfile = await getUserProfile();
+    if (userProfile == null) return;
+    
+    final newXP = userProfile.xp + xpAmount;
+    final newLevel = _calculateLevel(newXP);
+    
+    // Update user profile with new XP and level
+    final updatedProfile = UserProfile(
+      id: userProfile.id,
+      username: userProfile.username,
+      email: userProfile.email,
+      avatarUrl: userProfile.avatarUrl,
+      level: newLevel,
+      xp: newXP,
+      country: userProfile.country,
+      joinDate: userProfile.joinDate,
+      ownedGames: userProfile.ownedGames,
+      wishlist: userProfile.wishlist,
+      friends: userProfile.friends,
+      achievements: userProfile.achievements,
+      gamePlaytime: userProfile.gamePlaytime,
+      gameRatings: userProfile.gameRatings,
+    );
+    
+    await saveUserProfile(updatedProfile);
+  }
+
+  // Calculate level based on XP (exponential growth)
+  static int _calculateLevel(int xp) {
+    // Level formula: level = floor(sqrt(xp / 100)) + 1
+    // This means: Level 1 = 0-99 XP, Level 2 = 100-399 XP, Level 3 = 400-899 XP, etc.
+    return sqrt(xp / 100).floor() + 1;
+  }
+
+  // Get XP required for next level
+  static int getXPRequiredForNextLevel(int currentLevel) {
+    // XP required for level N = (N-1)^2 * 100
+    return (currentLevel * currentLevel) * 100;
+  }
+
+  // Get XP progress for current level
+  static int getXPProgressForCurrentLevel(int currentXP, int currentLevel) {
+    final xpForCurrentLevel = getXPRequiredForNextLevel(currentLevel - 1);
+    return currentXP - xpForCurrentLevel;
+  }
+
+  // Update achievement progress without unlocking
+  static Future<void> updateAchievementProgress(String achievementId, int progress) async {
+    final achievements = await getUserAchievements();
+    final existingIndex = achievements.indexWhere((a) => a.achievementId == achievementId);
+    
+    if (existingIndex != -1) {
+      // Update existing progress
+      achievements[existingIndex] = UserAchievement(
+        achievementId: achievementId,
+        unlockedAt: achievements[existingIndex].unlockedAt,
+        progress: progress,
+        isUnlocked: achievements[existingIndex].isUnlocked,
+      );
+    } else {
+      // Create new progress entry
+      achievements.add(UserAchievement(
+        achievementId: achievementId,
+        unlockedAt: DateTime.now(),
+        progress: progress,
+        isUnlocked: false,
+      ));
+    }
+    
+    // Save updated achievements
+    final currentUser = await _getCurrentUserId();
+    if (currentUser != null) {
+      final prefs = await SharedPreferences.getInstance();
+      final achievementsJson = jsonEncode(achievements.map((a) => a.toJson()).toList());
+      await prefs.setString('$_achievementsKey$currentUser', achievementsJson);
+    }
+  }
+
+  // Get all available achievements
+  static List<Achievement> getAllAchievements() {
+    return [
+      Achievement(
+        id: 'first_game',
+        title: 'First Steps',
+        description: 'Purchase your first game',
+        iconUrl: '🎮',
+        xpReward: 50,
+        type: AchievementType.milestone,
+        requirements: {'games_purchased': 1},
+      ),
+      Achievement(
+        id: 'game_collector',
+        title: 'Game Collector',
+        description: 'Own 10 games in your library',
+        iconUrl: '📚',
+        xpReward: 100,
+        type: AchievementType.collection,
+        requirements: {'games_owned': 10},
+      ),
+      Achievement(
+        id: 'social_butterfly',
+        title: 'Social Butterfly',
+        description: 'Add 5 friends',
+        iconUrl: '👥',
+        xpReward: 75,
+        type: AchievementType.social,
+        requirements: {'friends_count': 5},
+      ),
+      Achievement(
+        id: 'reviewer',
+        title: 'Critic',
+        description: 'Write your first game review',
+        iconUrl: '✍️',
+        xpReward: 25,
+        type: AchievementType.gaming,
+        requirements: {'reviews_written': 1},
+      ),
+      Achievement(
+        id: 'time_master',
+        title: 'Time Master',
+        description: 'Play games for 100 hours total',
+        iconUrl: '⏰',
+        xpReward: 200,
+        type: AchievementType.gaming,
+        requirements: {'total_playtime': 100},
+      ),
+      Achievement(
+        id: 'early_bird',
+        title: 'Early Bird',
+        description: 'Purchase a game on release day',
+        iconUrl: '🐦',
+        xpReward: 150,
+        type: AchievementType.special,
+        requirements: {'day_one_purchase': 1},
+        isSecret: true,
+      ),
+      Achievement(
+        id: 'library_master',
+        title: 'Library Master',
+        description: 'Own 25 games in your library',
+        iconUrl: '🏆',
+        xpReward: 300,
+        type: AchievementType.collection,
+        requirements: {'games_owned': 25},
+      ),
+      Achievement(
+        id: 'social_networker',
+        title: 'Social Networker',
+        description: 'Add 10 friends',
+        iconUrl: '🌐',
+        xpReward: 150,
+        type: AchievementType.social,
+        requirements: {'friends_count': 10},
+      ),
+      Achievement(
+        id: 'dedicated_gamer',
+        title: 'Dedicated Gamer',
+        description: 'Play games for 500 hours total',
+        iconUrl: '🎯',
+        xpReward: 500,
+        type: AchievementType.gaming,
+        requirements: {'total_playtime': 500},
+      ),
+      Achievement(
+        id: 'review_master',
+        title: 'Review Master',
+        description: 'Write 10 game reviews',
+        iconUrl: '📝',
+        xpReward: 200,
+        type: AchievementType.gaming,
+        requirements: {'reviews_written': 10},
+      ),
+    ];
+  }
+
+  // Force unlock all achievements for testing
+  static Future<void> forceUnlockAllAchievements() async {
+    final allAchievements = getAllAchievements();
+    for (final achievement in allAchievements) {
+      await unlockAchievement(achievement.id, achievement.xpReward);
+    }
+  }
+
+  // Force unlock specific achievements for testing
+  static Future<void> forceUnlockLibraryAchievements() async {
+    await unlockAchievement('first_game', 50);
+    await unlockAchievement('game_collector', 100);
+    await unlockAchievement('library_master', 300);
+    await unlockAchievement('early_bird', 150);
+  }
+
+  // Test method to force unlock game_collector specifically
+  static Future<void> forceUnlockGameCollector() async {
+    print('DEBUG: Force unlocking game_collector');
+    await unlockAchievement('game_collector', 100);
+  }
+
+  // Debug method to check current stats
+  static Future<Map<String, dynamic>> getDebugStats() async {
+    final currentUser = await _getCurrentUserId();
+    if (currentUser == null) return {};
+    
+    final userProfile = await getUserProfile();
+    final friends = await getFriends();
+    final library = await getUserLibrary();
+    final reviews = await getGameReviews(currentUser);
+    
+    return {
+      'user_id': currentUser,
+      'games_in_library': library.length,
+      'friends_count': friends.length,
+      'reviews_written': reviews.length,
+      'total_playtime': userProfile?.gamePlaytime.values.fold(0.0, (sum, time) => sum + time) ?? 0.0,
+      'user_level': userProfile?.level ?? 0,
+      'user_xp': userProfile?.xp ?? 0,
+    };
   }
 
   // Get friends list
@@ -522,6 +891,9 @@ class GameLibraryService {
     // Save updated requests globally
     final requestsJsonNew = jsonEncode(requests.map((r) => r.toJson()).toList());
     await prefs.setString('global_friend_requests', requestsJsonNew);
+    
+    // Check and unlock achievements after adding friend
+    await checkAndUnlockAchievements();
   }
 
   // Decline friend request
